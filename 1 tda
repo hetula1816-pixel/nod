@@ -1,0 +1,273 @@
+{
+  "name": "AutoPost 1 - Trend to Draft and Approval",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 9 * * *"
+            }
+          ]
+        }
+      },
+      "name": "Daily at 9am",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "id": "node_1",
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "GET",
+        "url": "https://trends.google.com/trending/rss?geo=IN",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "name": "Get Google Trends",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "id": "node_2",
+      "position": [
+        220,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $input.first().json.data ?? $input.first().json;\nconst text = typeof raw === 'string' ? raw : JSON.stringify(raw);\nconst titles = [...text.matchAll(/<title>(?:<!\\[CDATA\\[)?(.*?)(?:\\]\\]>)?<\\/title>/g)].map(m => m[1]);\n// titles[0] is usually the feed's own title (\"Daily Search Trends\"), the real trends start after it\nconst trend = titles[1] || titles[0] || \"trending topic\";\nreturn [{ json: { trend } }];"
+      },
+      "name": "Pick Top Trend",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "id": "node_3",
+      "position": [
+        440,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const trend = $json.trend;\nconst prompt = \"Trend: \" + trend + \"\\n\\n\" +\n  \"Write an ORIGINAL short-reel concept inspired by this trend. \" +\n  \"Do not copy, describe frame-by-frame, or quote any existing video, song, or post about it \" +\n  \"- invent your own act, wording, and framing so it is clearly your own content.\\n\" +\n  \"Return ONLY valid JSON (no markdown fences, no extra text) with keys: \" +\n  \"concept (1 sentence), hook (first 2 lines of the script), caption (1-2 sentences), \" +\n  \"hashtags (array of 15 short tags without the # symbol), \" +\n  \"audio_suggestion (a short phrase to search for in the platform's own trending-audio picker).\";\nconst requestBody = {\n  model: \"claude-sonnet-4-5\",\n  max_tokens: 800,\n  messages: [{ role: \"user\", content: prompt }]\n};\nreturn [{ json: { trend, requestBody } }];"
+      },
+      "name": "Build Claude Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "id": "node_4",
+      "position": [
+        660,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "PASTE_YOUR_ANTHROPIC_API_KEY"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            },
+            {
+              "name": "content-type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.requestBody) }}",
+        "options": {}
+      },
+      "name": "Ask Claude for Draft",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "id": "node_5",
+      "position": [
+        880,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const trend = $('Build Claude Prompt').first().json.trend;\nconst raw = $json.content[0].text;\nconst cleaned = raw.replace(/```json|```/g, '').trim();\nconst draft = JSON.parse(cleaned);\nreturn [{\n  json: {\n    id: Date.now().toString(),\n    trend,\n    concept: draft.concept,\n    hook: draft.hook,\n    caption: draft.caption,\n    hashtags: (draft.hashtags || []).map(h => '#' + h).join(' '),\n    audio_suggestion: draft.audio_suggestion,\n    status: 'Pending',\n    createdAt: new Date().toISOString()\n  }\n}];"
+      },
+      "name": "Parse Claude Draft",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "id": "node_6",
+      "position": [
+        1100,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "mode": "id",
+          "value": "PASTE_YOUR_GOOGLE_SHEET_ID"
+        },
+        "sheetName": {
+          "__rl": true,
+          "mode": "name",
+          "value": "ContentQueue"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ID": "={{$json.id}}",
+            "Trend": "={{$json.trend}}",
+            "Concept": "={{$json.concept}}",
+            "Hook": "={{$json.hook}}",
+            "Caption": "={{$json.caption}}",
+            "Hashtags": "={{$json.hashtags}}",
+            "AudioSuggestion": "={{$json.audio_suggestion}}",
+            "Status": "={{$json.status}}",
+            "CreatedAt": "={{$json.createdAt}}"
+          }
+        }
+      },
+      "name": "Save Draft to Sheet",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "id": "node_7",
+      "position": [
+        1320,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "chatId": "PASTE_YOUR_TELEGRAM_CHAT_ID",
+        "text": "=New reel idea from trend: {{$json.trend}}\n\nConcept: {{$json.concept}}\nHook: {{$json.hook}}\nCaption: {{$json.caption}}\nHashtags: {{$json.hashtags}}\nAudio idea: {{$json.audio_suggestion}}\n\nApprove this?",
+        "additionalFields": {
+          "reply_markup": "={{ { inline_keyboard: [[ { text: 'Approve', callback_data: 'approve:' + $json.id }, { text: 'Reject', callback_data: 'reject:' + $json.id } ]] } }}"
+        }
+      },
+      "name": "Send for Approval",
+      "type": "n8n-nodes-base.telegram",
+      "typeVersion": 1.2,
+      "id": "node_8",
+      "position": [
+        1540,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "content": "BEFORE RUNNING:\n1. Get Google Trends: just change geo=IN to your country if needed.\n2. Ask Claude for Draft: paste your Anthropic API key in the x-api-key header.\n3. Save Draft to Sheet: pick your Google Sheet + Google Sheets credential. Create a sheet named ContentQueue with columns: ID, Trend, Concept, Hook, Caption, Hashtags, AudioSuggestion, Status, CreatedAt.\n4. Send for Approval: add your Telegram Bot credential and your chat ID.\n5. This workflow only drafts + asks for approval. Workflow 2 handles the Approve/Reject buttons and posting.",
+        "height": 260,
+        "width": 420
+      },
+      "name": "Setup notes",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "id": "node_9",
+      "position": [
+        0,
+        -260
+      ]
+    }
+  ],
+  "connections": {
+    "Daily at 9am": {
+      "main": [
+        [
+          {
+            "node": "Get Google Trends",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Google Trends": {
+      "main": [
+        [
+          {
+            "node": "Pick Top Trend",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pick Top Trend": {
+      "main": [
+        [
+          {
+            "node": "Build Claude Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Claude Prompt": {
+      "main": [
+        [
+          {
+            "node": "Ask Claude for Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ask Claude for Draft": {
+      "main": [
+        [
+          {
+            "node": "Parse Claude Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Claude Draft": {
+      "main": [
+        [
+          {
+            "node": "Save Draft to Sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Draft to Sheet": {
+      "main": [
+        [
+          {
+            "node": "Send for Approval",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "pinData": {}
+}
